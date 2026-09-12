@@ -7,6 +7,7 @@ from sqlalchemy.orm import Session
 
 from app.core.deps import CurrentUser, get_db, log_action
 from app.core.security import create_access_token, hash_password, verify_password
+from app.core.static_users import get_static_user
 from app.db.models import User, UserRole
 from app.schemas.schemas import LoginRequest, TokenResponse, UserCreate, UserOut
 
@@ -15,17 +16,34 @@ router = APIRouter(prefix="/auth", tags=["Auth"])
 
 @router.post("/login", response_model=TokenResponse)
 def login(payload: LoginRequest, request: Request, db: Session = Depends(get_db)):
-    user = db.query(User).filter(User.username == payload.username).first()
-    if not user or not verify_password(payload.password, user.hashed_password):
-        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid credentials")
-    if not user.is_active:
-        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Account disabled")
+    user = None
 
-    user.last_login = datetime.now(timezone.utc)
-    db.commit()
+    # ── Try DB first ──────────────────────────────────────────────────────────
+    try:
+        user = db.query(User).filter(User.username == payload.username).first()
+    except Exception:
+        pass  # DB unavailable — fall through to static users
+
+    if user is not None:
+        # Found in DB — normal flow
+        if not verify_password(payload.password, user.hashed_password):
+            raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid credentials")
+        if not user.is_active:
+            raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Account disabled")
+        try:
+            user.last_login = datetime.now(timezone.utc)
+            db.commit()
+            log_action(db, user, "LOGIN", ip_address=request.client.host if request.client else None)
+        except Exception:
+            pass
+    else:
+        # ── Fall back to static demo users ────────────────────────────────────
+        static = get_static_user(payload.username)
+        if not static or not verify_password(payload.password, static.hashed_password):
+            raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid credentials")
+        user = static  # type: ignore[assignment]
 
     token = create_access_token(user.id, user.role.value)
-    log_action(db, user, "LOGIN", ip_address=request.client.host if request.client else None)
 
     return TokenResponse(
         access_token=token,

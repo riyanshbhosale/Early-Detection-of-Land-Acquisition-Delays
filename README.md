@@ -120,6 +120,21 @@ pip install -r backend/requirements.txt
 python backend/scripts/seed_db.py
 ```
 
+
+
+
+
+
+
+d
+d
+
+
+
+
+
+
+
 ### 6. Generate synthetic data + train model
 ```bash
 python data/generate_data.py
